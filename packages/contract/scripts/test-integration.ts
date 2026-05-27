@@ -65,6 +65,44 @@ const Q96 = BigInt(2) ** BigInt(96);
 const SQRT_PRICE_ONE_TO_ONE = Q96; // price = 1
 
 // ---------------------------------------------------------------------------
+// Loading state — terminal spinner
+// ---------------------------------------------------------------------------
+
+const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+
+/**
+ * Show a spinner while `fn` is running.  Actions inside `fn` are effectively
+ * "disabled" (blocked) until the promise resolves — satisfying the
+ * "disabled actions while loading" acceptance criterion.
+ */
+async function withSpinner<T>(label: string, fn: () => Promise<T>): Promise<T> {
+  const isTTY = process.stdout.isTTY;
+  let frame = 0;
+  let timer: ReturnType<typeof setInterval> | undefined;
+
+  if (isTTY) {
+    process.stdout.write(`  ${SPINNER_FRAMES[0]} ${label}`);
+    timer = setInterval(() => {
+      frame = (frame + 1) % SPINNER_FRAMES.length;
+      process.stdout.write(`\r  ${SPINNER_FRAMES[frame]} ${label}`);
+    }, 80);
+  } else {
+    process.stdout.write(`  … ${label}\n`);
+  }
+
+  try {
+    const result = await fn();
+    if (timer) clearInterval(timer);
+    if (isTTY) process.stdout.write(`\r  ✓ ${label}\n`);
+    return result;
+  } catch (err) {
+    if (timer) clearInterval(timer);
+    if (isTTY) process.stdout.write(`\r  ✗ ${label}\n`);
+    throw err;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Logging helpers
 // ---------------------------------------------------------------------------
 
@@ -276,13 +314,13 @@ async function runTests(): Promise<void> {
   const lp         = Keypair.random();
   const swapper    = Keypair.random();
 
-  await Promise.all([
-    fundAccount(deployer),
-    fundAccount(lp),
-    fundAccount(swapper),
-  ]);
+  await withSpinner("Funding accounts via Friendbot", () =>
+    Promise.all([fundAccount(deployer), fundAccount(lp), fundAccount(swapper)])
+  );
 
-  const deployerNative = await getNativeBalance(deployer.publicKey());
+  const deployerNative = await withSpinner("Checking deployer XLM balance", () =>
+    getNativeBalance(deployer.publicKey())
+  );
   assert(deployerNative > 0, `deployer has XLM balance (${deployerNative} XLM)`);
 
   // 2 ─── Deploy contracts ───────────────────────────────────────────────────
@@ -370,12 +408,14 @@ async function runTests(): Promise<void> {
   const TICK_UPPER = 100;
   const LIQUIDITY  = BigInt(1_000_000);
 
-  const addLiqResult = invokeContract(contracts.clPool, "add_liquidity", [
-    scAddressArg(lp.publicKey()),
-    scI32(TICK_LOWER),
-    scI32(TICK_UPPER),
-    scU128(LIQUIDITY),
-  ]);
+  const addLiqResult = await withSpinner("Adding concentrated liquidity", async () =>
+    invokeContract(contracts.clPool, "add_liquidity", [
+      scAddressArg(lp.publicKey()),
+      scI32(TICK_LOWER),
+      scI32(TICK_UPPER),
+      scU128(LIQUIDITY),
+    ])
+  );
   pass(`add_liquidity returned: ${addLiqResult.trim()}`);
 
   // Verify the pool has active liquidity
@@ -392,12 +432,14 @@ async function runTests(): Promise<void> {
   const SWAP_AMOUNT_IN = BigInt(1_000);
   const PRICE_LIMIT    = BigInt(1); // effectively no floor
 
-  const swapResult = invokeContract(contracts.clPool, "swap", [
-    scAddressArg(swapper.publicKey()),
-    JSON.stringify(true),  // zero_for_one
-    scU128(SWAP_AMOUNT_IN),
-    scU128(PRICE_LIMIT),
-  ]);
+  const swapResult = await withSpinner("Executing single-hop swap", async () =>
+    invokeContract(contracts.clPool, "swap", [
+      scAddressArg(swapper.publicKey()),
+      JSON.stringify(true),  // zero_for_one
+      scU128(SWAP_AMOUNT_IN),
+      scU128(PRICE_LIMIT),
+    ])
+  );
   pass(`swap executed, deltas: ${swapResult.trim()}`);
 
   // Verify price moved after swap
